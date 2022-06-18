@@ -1,0 +1,10 @@
+#pragma kernel Crop
+
+Texture2D<float4> input;
+RWTexture2D<float4> output;
+float4 bounds;
+
+[numthreads(8,8,1)]
+void Crop(uint3 id : SV_DispatchThreadID) {
+	output[id.xy] = input[id.xy + bounds.xy];
+}

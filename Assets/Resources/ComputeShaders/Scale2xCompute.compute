@@ -1,0 +1,167 @@
+﻿
+Texture2D<float4> input;
+RWTexture2D<float4> output;
+
+inline float sq(float n) {
+	return n*n;
+}
+
+float colordist(float4 col, float4 col2) {
+	// TODO
+	return length(col-col2);
+
+	// return abs(
+	// 	(col.r*.299 + col.g*.587 + col.b*.114 + col.a*.3) -
+	// 	(col2.r*.299 + col2.g*.587 + col2.b*.114 + col2.a*.3)
+	// );
+
+	// return (
+	// 	max(sq(col.r-col2.r), sq(col.r-col2.r - col.a+col2.a)) + 
+	// 	max(sq(col.g-col2.g), sq(col.g-col2.g - col.a+col2.a)) + 
+	// 	max(sq(col.b-col2.b), sq(col.b-col2.b - col.a+col2.a))
+	// );
+	
+}
+
+float colordist2(float4 col, float4 col2) {
+	// return length(col-col2);
+	return abs(
+		(col.r*.299 + col.g*.587 + col.b*.114 + col.a*.3) -
+		(col2.r*.299 + col2.g*.587 + col2.b*.114 + col2.a*.3)
+	);
+	return (
+		max(sq(col.r-col2.r), sq(col.r-col2.r - col.a+col2.a)) + 
+		max(sq(col.g-col2.g), sq(col.g-col2.g - col.a+col2.a)) + 
+		max(sq(col.b-col2.b), sq(col.b-col2.b - col.a+col2.a))
+	);
+}
+
+bool similar(float4 col, float4 col2) {
+	// return colordist(col, col2) < .2;
+	return (
+		col.r == col2.r &&
+		col.g == col2.g &&
+		col.b == col2.b &&
+		col.a == col2.a
+	);
+}
+
+#pragma kernel Upscale
+
+// Runs in Input Space
+[numthreads(8,8,1)]
+void Upscale(uint3 id : SV_DispatchThreadID) {
+
+	float4 PIXEL = input[id.xy];
+	float4 UP = input[id.xy + int2(0, -1)];
+	float4 DOWN = input[id.xy + int2(0, 1)];
+	float4 LEFT = input[id.xy + int2(-1, 0)];
+	float4 RIGHT = input[id.xy + int2(1, 0)];
+
+
+	float4 A = PIXEL;
+	float4 B = PIXEL;
+	float4 C = PIXEL;
+	float4 D = PIXEL;
+
+	A = lerp(A, UP,    similar(LEFT, UP)    && !similar(LEFT, DOWN)  && !similar(UP, RIGHT)  );
+	B = lerp(B, RIGHT, similar(UP, RIGHT)   && !similar(UP, LEFT)    && !similar(RIGHT, DOWN));
+	C = lerp(C, LEFT,  similar(DOWN, LEFT)  && !similar(DOWN, RIGHT) && !similar(LEFT, UP)   );
+	D = lerp(D, DOWN,  similar(RIGHT, DOWN) && !similar(RIGHT, UP)   && !similar(DOWN, LEFT) );
+
+	float4 UL = input[id.xy + int2(-1, 1)];
+	float4 UR = input[id.xy + int2(1, 1)];
+	float4 DL = input[id.xy + int2(-1, -1)];
+	float4 DR = input[id.xy + int2(1, -1)];
+	float4 UU = input[id.xy + int2(0, 2)];
+	float4 DD = input[id.xy + int2(0, -2)];
+	float4 LL = input[id.xy + int2(-2, 0)];
+	float4 RR = input[id.xy + int2(2, 0)];
+
+	A = similar(UP, LEFT) && !similar(UP, RIGHT) && !similar(LEFT, DOWN) && (!similar(PIXEL, UL) || similar(PIXEL, UR) || similar(PIXEL, DL) || similar(UL, UU) || similar(UL, LL)) ? (UP) : PIXEL;
+	B = similar(UP, RIGHT) && !similar(UP, LEFT) && !similar(RIGHT, DOWN) && (!similar(PIXEL, UR) || similar(PIXEL, UL) || similar(PIXEL, DR) || similar(UR, UU) || similar(UR, RR)) ? (RIGHT) : PIXEL;
+	C = similar(LEFT, DOWN) && !similar(UP, LEFT) && !similar(RIGHT, DOWN) && (!similar(PIXEL, DL) || similar(PIXEL, UL) || similar(PIXEL, DR) || similar(DL, LL) || similar(DL, DD)) ? (LEFT) : PIXEL;
+	D = similar(RIGHT, DOWN) && !similar(UP, RIGHT) && !similar(LEFT, DOWN) && (!similar(PIXEL, DR) || similar(PIXEL, UR) || similar(PIXEL, DL) || similar(DR, RR) || similar(DR, DD)) ? (DOWN) : PIXEL;
+
+	output[id.xy*2 + int2(0, 0)] = A;
+	output[id.xy*2 + int2(1, 0)] = B;
+	output[id.xy*2 + int2(0, 1)] = C;
+	output[id.xy*2 + int2(1, 1)] = D;
+	
+}
+
+#pragma kernel Downscale
+
+// Output Space
+[numthreads(8,8,1)]
+void Downscale(uint3 id : SV_DispatchThreadID) {
+	float4 A = input[id.xy*2 + int2(0, 0)];
+	float4 B = input[id.xy*2 + int2(1, 0)];
+	float4 C = input[id.xy*2 + int2(0, 1)];
+	float4 D = input[id.xy*2 + int2(1, 1)];
+
+	float4 avg = (A + B + C + D) * .25;
+
+	float4 pixels[4] = { A, B, C, D };
+
+	float closestdist = 1000000;
+	float4 closestpixel = 0;
+	for (int i = 0; i < 4; i++) {
+		float dist = colordist2(avg, pixels[i]);
+
+		if (dist < closestdist) {
+			closestdist = dist;
+			closestpixel = pixels[i];
+		}
+	}
+
+	output[id.xy] = closestpixel;
+	// output[id.xy] = float4((float3)closestdist, 1);
+	// output[id.xy] = A;
+}
+
+#pragma kernel Rotate
+
+float2 pivot;
+float angle;
+
+// Output Space
+[numthreads(8,8,1)]
+void Rotate(uint3 id : SV_DispatchThreadID) {
+
+	pivot = pivot-0.5;
+
+	float c = cos(-angle);
+	float s = sin(-angle);
+	// float2x2 rotmatrix = float2x2()	
+
+	float2 pos = id.xy - pivot; // Translation
+	pos = float2(pos.x * c - pos.y * s, pos.y * c + pos.x * s); // Rotation
+	pos += pivot; //Retranslation
+
+	float2 fl = floor(pos);
+	float2 fr = frac(pos);
+
+	float4 pixels[4] = {
+		input[fl + int2(0, 0)],
+		input[fl + int2(1, 0)],
+		input[fl + int2(0, 1)],
+		input[fl + int2(1, 1)]
+	};
+
+	float4 avg = lerp(lerp(pixels[0], pixels[1], fr.x), lerp(pixels[2], pixels[3], fr.x), fr.y);
+
+	float closestdist = 1000000;
+	float4 closestpixel = 0;
+	for (int i = 0; i < 4; i++) {
+		float dist = colordist2(avg, pixels[i]);
+
+		if (dist < closestdist) {
+			closestdist = dist;
+			closestpixel = pixels[i];
+		}
+	}
+
+	output[id.xy] = closestpixel;
+
+}
